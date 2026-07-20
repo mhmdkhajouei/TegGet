@@ -336,8 +336,16 @@ async def handle_alarm_frequency(update: Update, context: ContextTypes.DEFAULT_T
 
     _clear_alarm_timeout_job(chat_id, context)
 
-    active_count = await database.count_active_alarms(chat_id)
-    if active_count >= MAX_ACTIVE_ALARMS:
+    # استفاده از تابع اتمیک جدید با کنترل هم‌زمانی سهمیه
+    alarm_id = await database.insert_alarm_with_quota_check(
+        chat_id=chat_id,
+        target_price=target_price,
+        condition=condition,
+        frequency=frequency,
+        max_limit=MAX_ACTIVE_ALARMS
+    )
+
+    if alarm_id == 0:
         context.user_data.pop("alarm_condition", None)
         context.user_data.pop("alarm_target_price", None)
         context.user_data.pop("alarm_message_id", None)
@@ -352,13 +360,6 @@ async def handle_alarm_frequency(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=keyboard
         )
         return ConversationHandler.END
-
-    await database.insert_alarm(
-        chat_id=chat_id,
-        target_price=target_price,
-        condition=condition,
-        frequency=frequency,
-    )
 
     context.user_data.pop("alarm_condition", None)
     context.user_data.pop("alarm_target_price", None)

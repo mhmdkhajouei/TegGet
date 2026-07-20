@@ -11,6 +11,8 @@ from app.bot.bot_state import poller_status
 from app.bot.handlers import build_application, process_update
 from app.config import settings
 from app.services.market_service import get_market_data
+# اتصال موتور ارزیابی هشدارها که از قلم افتاده بود
+from app.services.alarm_service import evaluate_and_trigger_alarms
 
 # تنظیم لایه لاگر پروژه
 logging.basicConfig(
@@ -29,7 +31,7 @@ async def _market_poll_loop():
     چرخه اصلی پولینگ بازارهای تتر (هر ۳ ثانیه یک‌بار).
     """
     logger.info(
-        "Starting market polling loop. Poll interval: %d seconds.", 
+        "Starting market polling loop. Poll interval: %d seconds.",
         settings.market_poll_interval
     )
     db_write_counter = 0
@@ -47,6 +49,9 @@ async def _market_poll_loop():
                 poller_status.last_market_success = start_time
                 poller_status.last_market_error = None
 
+                # روشن کردن موتور ارزیابی هشدارها در هر تیک ۳ ثانیه‌ای قیمت بازار
+                await evaluate_and_trigger_alarms(current_price, data["source"], bot_app)
+
                 # کنترل فرکانس ذخیره‌سازی در دیتابیس (Throttling 15s)
                 db_write_counter += 1
                 if db_write_counter >= 5:
@@ -58,7 +63,7 @@ async def _market_poll_loop():
                         change_24h=data.get("change_24h"),
                     )
                     logger.info(
-                        "Recorded snapshot to DB: %.2f IRT from %s (Throttled 15s)", 
+                        "Recorded snapshot to DB: %.2f IRT from %s (Throttled 15s)",
                         current_price, data["source"]
                     )
                     db_write_counter = 0
@@ -104,9 +109,12 @@ async def lifespan(app: FastAPI):
     # شروع به کار ربات در حالت Polling مخصوص تست لوکال
     await bot_app.initialize()
 
-    # ۱. استارت موتور زمان‌بندی جاب‌کیو در استارت‌آپ
+    # موتور زمان‌بندی جاب‌کیو در استارت‌آپ
     if bot_app.job_queue:
+        logger.info("🚀 JobQueue initialized successfully. Starting the queue...")
         await bot_app.job_queue.start()
+    else:
+        logger.warning("❌ JobQueue is NOT available. Check your dependencies.")
 
     await bot_app.updater.start_polling()
     await bot_app.start()
@@ -130,7 +138,7 @@ async def lifespan(app: FastAPI):
     await bot_app.updater.stop()
     await bot_app.stop()
 
-    # ۲. استاپ اصولی موتور زمان‌بندی جاب‌کیو در تِردون
+    # استاپ اصولی موتور زمان‌بندی جاب‌کیو در تِردون
     if bot_app.job_queue:
         await bot_app.job_queue.stop()
 
