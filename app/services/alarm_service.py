@@ -9,7 +9,7 @@ alarm math and Telegram dispatch for triggered alarms lives here.
 import logging
 import time
 
-from telegram.ext import Application
+from telegram.ext import ExtBot
 
 from app import database
 
@@ -31,12 +31,12 @@ _CONDITION_LABELS = {
 
 
 async def evaluate_and_trigger_alarms(
-    current_price: float, source: str, bot_app: Application
+    current_price: float, source: str, bot_token: str
 ) -> None:
     """
     موتور اصلی ارزیابی و شلیک هشدارهای قیمت بر اساس سند فلو و تجربه کاربری.
-    اصلاح شده: اضافه شدن دستور continue پس از مسلح‌سازی مجدد برای تثبیت تغییر وضعیت در تیک جاری.
-    اصلاح نهایی (رفع باگ ۴): استفاده از Context Manager اتمیک برای بات جهت جلوگیری از نشت حافظه (Memory Leak).
+    اصلاح نهایی: جداسازی کامل سشن ارسال پیام از پولر اصلی با ایجاد کلاینت مستقل موقت
+    جهت جلوگیری از باگ مرگبار RuntimeError برای HTTPXRequest.
     """
     try:
         # دریافت تمام هشدارهای فعال (حتی هشدارهایی که مسلح نیستند)
@@ -149,9 +149,10 @@ async def evaluate_and_trigger_alarms(
                             f"🔁 تناوب هشدار: روزی یک‌بار (گزارش ماندگاری در ناحیه شکست)"
                         )
                         try:
-                            # بهینه‌سازی اتمیک با Context Manager جهت جلوگیری از نشت حافظه در ورکر
-                            async with bot_app.bot:
-                                await bot_app.bot.send_message(chat_id=chat_id, text=message_text, parse_mode="Markdown")
+                            # ساخت کلاینت مستقل اتمیک موقت مخصوص تسک پس‌زمینه
+                            local_bot = ExtBot(token=bot_token)
+                            async with local_bot:
+                                await local_bot.send_message(chat_id=chat_id, text=message_text, parse_mode="Markdown")
                             await database.update_alarm_triggered_at(alarm_id, int(now), is_armed=0)
                             logger.info("Executed postponed daily notification for new calendar day on alarm %s", alarm_id)
                         except Exception as tg_err:
@@ -192,9 +193,10 @@ async def evaluate_and_trigger_alarms(
                 message_text += f"🔁 تناوب هشدار: {frequency == 'daily' and 'روزی یک‌بار' or 'هر بار (با رعایت نوسان)'}"
 
             try:
-                # بهینه‌سازی اتمیک با Context Manager جهت جلوگیری از نشت حافظه در ورکر
-                async with bot_app.bot:
-                    await bot_app.bot.send_message(
+                # ساخت کلاینت مستقل اتمیک موقت مخصوص تسک پس‌زمینه برای عدم تداخل با سشن اصلی
+                local_bot = ExtBot(token=bot_token)
+                async with local_bot:
+                    await local_bot.send_message(
                         chat_id=chat_id,
                         text=message_text,
                         parse_mode="Markdown"
