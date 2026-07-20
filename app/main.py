@@ -8,10 +8,9 @@ from fastapi import FastAPI
 
 from app import database
 from app.bot.bot_state import poller_status
-from app.bot.handlers import build_application, process_update
+from app.bot.handlers import build_application
 from app.config import settings
 from app.services.market_service import get_market_data
-# اتصال موتور ارزیابی هشدارها که از قلم افتاده بود
 from app.services.alarm_service import evaluate_and_trigger_alarms
 
 # تنظیم لایه لاگر پروژه
@@ -49,8 +48,8 @@ async def _market_poll_loop():
                 poller_status.last_market_success = start_time
                 poller_status.last_market_error = None
 
-                # روشن کردن موتور ارزیابی هشدارها در هر تیک ۳ ثانیه‌ای قیمت بازار
-                await evaluate_and_trigger_alarms(current_price, data["source"], bot_app)
+                # پاس دادن توکن ربات به موتور ارزیابی برای شلیک مستقل و اتمیک
+                await evaluate_and_trigger_alarms(current_price, data["source"], settings.telegram_bot_token)
 
                 # کنترل فرکانس ذخیره‌سازی در دیتابیس (Throttling 15s)
                 db_write_counter += 1
@@ -106,7 +105,7 @@ async def lifespan(app: FastAPI):
     # مقداردهی اولیه به کلاینت دیتابیس
     await database.init_db()
 
-    # شروع به کار ربات در حالت Polling مخصوص تست لوکال
+    # شروع به کار ربات در حالت Polling مخصوص تست لوکال و سرور
     await bot_app.initialize()
 
     # موتور زمان‌بندی جاب‌کیو در استارت‌آپ
@@ -116,9 +115,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("❌ JobQueue is NOT available. Check your dependencies.")
 
-    await bot_app.updater.start_polling()
+    await bot_app.updater.start_polling(drop_pending_updates=True)
     await bot_app.start()
-    logger.info("Telegram bot initialized and started via POLLING mode for local test.")
+    logger.info("Telegram bot initialized and started via POLLING mode safely.")
 
     # ثبت تسک‌های پس‌زمینه
     market_task = asyncio.create_task(_market_poll_loop())
