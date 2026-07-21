@@ -75,6 +75,26 @@ CREATE TABLE IF NOT EXISTS news_subscriptions (
 );
 """
 
+_CREATE_NEWS_FEED_SQL = """
+CREATE TABLE IF NOT EXISTS news_feed (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    summary      TEXT,
+    link         TEXT UNIQUE,
+    source_name  TEXT NOT NULL,
+    source_slug  TEXT NOT NULL,
+    category     TEXT NOT NULL DEFAULT 'economic',
+    score        INTEGER NOT NULL,
+    published_at INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+"""
+
+_CREATE_NEWS_FEED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_news_feed_published_slug
+ON news_feed (published_at DESC, source_slug);
+"""
+
 _connection: aiosqlite.Connection | None = None
 
 
@@ -97,6 +117,8 @@ async def init_db() -> aiosqlite.Connection:
     await conn.execute(_CREATE_ALARMS_SQL)
     await conn.execute(_CREATE_ALARMS_CHAT_INDEX_SQL)
     await conn.execute(_CREATE_NEWS_SUBSCRIPTIONS_SQL)
+    await conn.execute(_CREATE_NEWS_FEED_SQL)
+    await conn.execute(_CREATE_NEWS_FEED_INDEX_SQL)
 
     try:
         await conn.execute(_ALTER_ALARMS_ADD_LAST_TRIGGERED_SQL)
@@ -443,3 +465,122 @@ async def get_alarm_by_id(alarm_id: int, chat_id: int) -> dict | None:
         "last_triggered_at": row[7],
         "is_armed": row[8],
     }
+
+
+# ---------------------------------------------------------------------------
+# News feed engine management (v1.0)
+# ---------------------------------------------------------------------------
+
+async def insert_news_item(
+    title: str,
+    summary: str,
+    link: str,
+    source_name: str,
+    source_slug: str,
+    category: str,
+    score: int,
+    published_at: int,
+) -> bool:
+    """
+    ذخیره‌سازی اتمیک خبر جدید با شرط عدم تکراری بودن لینک.
+    در صورت تکراری بودن لینک، INSERT نادیده گرفته شده و False برمی‌گرداند.
+    """
+    conn = get_db()
+    now = int(time.time())
+    query = """
+    INSERT OR IGNORE INTO news_feed 
+    (title, summary, link, source_name, source_slug, category, score, published_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    async with conn.execute(
+        query,
+        (title, summary, link, source_name, source_slug, category, score, published_at, now),
+    ) as cursor:
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def get_filtered_news(
+    chat_id: int,
+    page: int = 1,
+    page_size: int = 5,
+    ignore_user_sources: bool = False,
+) -> tuple[list[dict], int]:
+    """
+    دریافت اخبار ۲۴ ساعت گذشته بر اساس منابع انتخابی کاربر در پروفایل.
+    - اگر ignore_user_sources برابر True باشد، منابع کاربر نادیده گرفته شده و تمام اخبار نشان داده می‌شود.
+    - اگر کاربر هیچ منبعی انتخاب نکرده باشد، لیست خالی برگردانده می‌شود.
+    - خروجی شامل: (لیست اخبار این صفحه, کل تعداد اخبار موجود).
+    """
+    conn = get_db()
+    cutoff_timestamp = int(time.time()) - (24 * 3600)
+    offset = (page - 1) * page_size
+
+    if ignore_user_sources:
+        where_clause = "WHERE published_at >= ?"
+        params = [cutoff_timestamp]
+    else:
+        user_sources = await get_user_news_sources(chat_id)
+        if not user_sources:
+            return [], 0
+
+        placeholders = ",".join("?" for _ in user_sources)
+        where_clause = f"WHERE published_at >= ? AND source_slug IN ({placeholders})"
+        params = [cutoff_timestamp] + user_sources
+
+    # ۱. محاسبه کل تعداد اخبار واجد شرایط برای Pagination
+    count_query = f"SELECT COUNT(*) FROM news_feed {where_clause}"
+    async with conn.execute(count_query, params) as cursor:
+        row = await cursor.fetchone()
+        total_count = row[0] if row else 0
+
+    if total_count == 0:
+        return [], 0
+
+    # ۲. کوئری دریافت اخبار صفحه جاری
+    fetch_query = f"""
+    SELECT id, title, summary, link, source_name, source_slug, category, score, published_at
+    FROM news_feed
+    {where_clause}
+    ORDER BY published_at DESC
+    LIMIT ? OFFSET ?
+    """
+    fetch_params = params + [page_size, offset]
+
+    async with conn.execute(fetch_query, fetch_params) as cursor:
+        rows = await cursor.fetchall()
+
+    news_items = [
+        {
+            "id": r[0],
+            "title": r[1],
+            "summary": r[2],
+            "link": r[3],
+            "source_name": r[4],
+            "source_slug": r[5],
+            "category": r[6],
+            "score": r[7],
+            "published_at": r[8],
+        }
+        for r in rows
+    ]
+
+    return news_items, total_count
+
+
+async def purge_expired_news(ttl_hours: int = 24) -> int:
+    """
+    پاکسازی خودکار اخباری که زمان انتشار واقعی آن‌ها قدیمی‌تر از TTL است.
+    """
+    conn = get_db()
+    cutoff_timestamp = int(time.time()) - (ttl_hours * 3600)
+
+    async with conn.execute(
+        "DELETE FROM news_feed WHERE published_at < ?",
+        (cutoff_timestamp,),
+    ) as cursor:
+        await conn.commit()
+        deleted_count = cursor.rowcount
+        if deleted_count > 0:
+            logger.info("Purged %d expired news items older than %d hours.", deleted_count, ttl_hours)
+        return deleted_count

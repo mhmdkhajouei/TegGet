@@ -12,6 +12,7 @@ from app.bot.handlers import build_application
 from app.config import settings
 from app.services.market_service import get_market_data
 from app.services.alarm_service import evaluate_and_trigger_alarms
+from app.services.news_service import fetch_and_process_news
 
 # تنظیم لایه لاگر پروژه
 logging.basicConfig(
@@ -80,16 +81,19 @@ async def _market_poll_loop():
 
 async def _news_poll_loop():
     """
-    چرخه بررسی اخبار روز تتر و ذخیره در سیستم.
+    چرخه بررسی اخبار روز تتر و ذخیره در دیتابیس با موتور Scoring.
     """
     logger.info("Starting news polling loop. Poll interval: %d seconds.", settings.rss_poll_interval)
     while True:
         start_time = asyncio.get_event_loop().time()
         try:
+            saved_count = await fetch_and_process_news()
             poller_status.last_news_success = start_time
             poller_status.last_news_error = None
+            if saved_count > 0:
+                logger.info("News poll completed: Saved %d new high-impact items.", saved_count)
         except Exception as e:
-            logger.error("Error in news polling cycle: %s", e)
+            logger.error("Error in news polling cycle: %s", e, exc_info=True)
             poller_status.last_news_error = str(e)
 
         elapsed = asyncio.get_event_loop().time() - start_time
