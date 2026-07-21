@@ -74,9 +74,10 @@ async def _render_news_menu(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
     rows = []
     for rss_source in settings.rss_source_priority:
+        slug = rss_source["slug"]
         name = rss_source["name"]
-        icon = "✅" if name in subscribed else "⬛️"
-        rows.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"news_toggle:{name}")])
+        icon = "✅" if slug in subscribed else "⬛️"
+        rows.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"news_toggle:{slug}")])
 
     text = "📰 مدیریت اخبار\n――――――――――――\n\nروی هر منبع بزن تا فعال یا غیرفعالش کنی:"
     keyboard = _with_footer(rows, back_callback="profile:back_main")
@@ -104,12 +105,9 @@ async def handle_profile_entry(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.pop("profile_edit_mode", None)
     context.user_data.pop("profile_pending_condition", None)
 
-    # اگر آپدیت از یک پیام متنی دکمه ریپلای آمده و پیام لایو قبلی از قبل ادیت شده است،
-    # نیازی به ارسال پیام متنی مجدد نیست و فقط استیت را تغییر می‌دهیم.
     if update.message and context.user_data.get("alarm_message_id"):
         return PROFILE_MAIN
 
-    # حالت عادی (اگر کاربر در چت خالی کامند /profile زده باشد)
     await update.message.reply_text(
         "⚙️ مرکز مدیریت\n――――――――――――\n\nچه چیزی رو می‌خوای مدیریت کنی؟",
         reply_markup=_profile_main_menu(),
@@ -163,9 +161,9 @@ async def handle_profile_toggle_news(update: Update, context: ContextTypes.DEFAU
     await query.answer()
 
     chat_id = update.effective_chat.id
-    source = query.data.split(":", 1)[1]
+    source_slug = query.data.split(":", 1)[1]
 
-    await database.toggle_news_source(chat_id, source)
+    await database.toggle_news_source(chat_id, source_slug)
 
     text, keyboard = await _render_news_menu(chat_id)
     await query.edit_message_text(text, reply_markup=keyboard)
@@ -328,7 +326,6 @@ async def handle_profile_edit_price_receive(update: Update, context: ContextType
 
     mode = context.user_data.get("profile_edit_mode")
 
-    # --- ۱. اعتبارسنجی قیمت هدف هنگام ویرایش قیمت عادی ---
     if mode == "price":
         is_valid, err_msg = _validate_target_price(alarm["condition"], value)
         if not is_valid:
@@ -336,7 +333,6 @@ async def handle_profile_edit_price_receive(update: Update, context: ContextType
             await update.message.reply_text(err_msg, reply_markup=keyboard)
             return PROFILE_EDIT_PRICE
 
-    # --- ۲. محاسبه تغییر شرط به حالت درصد بر اساس قیمت رم ---
     if mode == "condition_percentage":
         current_price = poller_status.last_price
         if current_price is None:
@@ -476,8 +472,6 @@ def build_profile_conversation_handler() -> ConversationHandler:
                 CommandHandler("profile", handle_profile_entry),
                 CallbackQueryHandler(handle_profile_goto_alarms, pattern=r"^go_to_profile_alarms$"),
                 MessageHandler(filters.Regex(f"^{re.escape(BTN_PROFILE)}$"), handle_profile_entry),
-                # خط جدید: این کالبک به پروفایل اجازه می‌دهد تا وقتی کلیک روی پیام شیشه‌ای رخ می‌دهد،
-                # مستقیماً استیت PROFILE_MAIN را بدون ارسال پیام متنی جدید فعال کند.
                 CallbackQueryHandler(handle_profile_back_main, pattern=r"^profile:back_main$"),
             ],
             states={

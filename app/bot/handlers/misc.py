@@ -38,15 +38,6 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def handle_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    ارسال ساده پیام جدید بدون دستکاری استیت‌ها یا پیغام‌های قبلی چت.
-    """
-    await update.message.reply_text(
-        "قابلیت اخبار به‌زودی اضافه می‌شه. فعلاً از 💵 قیمت لحظه‌ای و 🔔 هشدار استفاده کن."
-    )
-
-
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     now = time.time()
     lines = ["🩺 وضعیت سرویس‌های پس‌زمینه", "――――――――――――", ""]
@@ -116,7 +107,7 @@ async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_T
     if invalid_cmd_count == 0:
         context.user_data["invalid_command_count"] = 1
         guide_text = (
-            "🤔 همچین دستوری ندارم. منظورت یکی از این‌ها بود？\n\n"
+            "🤔 همچین دستوری ندارم. منظورت یکی از این‌ها بود؟\n\n"
             "🔔  تنظیم هشدار قیمت\n"
             "💵  دیدن قیمت لحظه‌ای\n"
             "📰  بررسی اخبار\n"
