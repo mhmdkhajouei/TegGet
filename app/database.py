@@ -1,10 +1,5 @@
 """
 aiosqlite connection lifecycle and schema management.
-
-Single shared connection for the whole process (SQLite + WAL mode handles
-concurrent readers fine on a 1GB VPS; we avoid a connection pool to keep
-memory flat). The connection is created in `init_db()` during the FastAPI
-lifespan and closed in `close_db()`.
 """
 import logging
 import time
@@ -181,6 +176,18 @@ async def insert_snapshot(
 
 
 async def get_latest_snapshots(limit: int = 2) -> list[dict]:
+    from app.bot.bot_state import poller_status
+    if poller_status.mock_mode and poller_status.mock_price is not None:
+        return [
+            {
+                "timestamp": int(time.time()),
+                "price": poller_status.mock_price,
+                "volume": 0.0,
+                "source": "demo_mock",
+                "change_24h": 0.0,
+            }
+        ]
+
     conn = get_db()
     async with conn.execute(
         "SELECT timestamp, price, volume, source, change_24h FROM market_snapshots "
@@ -242,11 +249,6 @@ async def insert_alarm(
 async def insert_alarm_with_quota_check(
     chat_id: int, target_price: float, condition: str, frequency: str, max_limit: int = 3
 ) -> int:
-    """
-    ثبت اتمیک هشدار با کنترل هم‌زمانی سهمیه در سطح کوئری.
-    اگر تعداد هشدارهای فعال کاربر قبل از درج کمتر از حد مجاز باشد، درج انجام می‌شود.
-    در غیر این صورت، هیچ رکوردی ثبت نشده و شناسه 0 برگشت داده می‌شود.
-    """
     conn = get_db()
     query = """
     INSERT INTO alarms (chat_id, target_price, condition, frequency, is_active, created_at, last_triggered_at, is_armed)
@@ -284,59 +286,37 @@ async def get_active_alarms() -> list[dict]:
 
 
 async def deactivate_alarm(alarm_id: int) -> None:
-    """غیرفعال‌سازی اتمیک برای هشدارهای یک‌بار مصرف با قفل خوش‌بینانه روی وضعیت اکتیو"""
     conn = get_db()
     async with conn.execute(
-        "UPDATE alarms SET is_active = 0 WHERE id = ? AND is_active = 1",
+        "UPDATE alarms SET is_active = 0 WHERE id = ?",
         (alarm_id,),
     ) as cursor:
         await conn.commit()
-        if cursor.rowcount == 0:
-            logger.warning("Race condition averted: Alarm %s was already deactivated.", alarm_id)
 
 
 async def update_alarm_triggered_at(alarm_id: int, triggered_at: int, is_armed: int = 0) -> None:
-    """
-    به‌روزرسانی زمان شلیک و وضعیت مسلح بودن.
-    کنترل هم‌زمانی: این آپدیت تنها زمانی اعمال می‌شود که وضعیت مسلح بودن با وضعیت آغازین تیک قیمت همخوانی داشته باشد.
-    """
     conn = get_db()
     async with conn.execute(
-        "UPDATE alarms SET last_triggered_at = ?, is_armed = ? WHERE id = ? AND is_active = 1",
+        "UPDATE alarms SET last_triggered_at = ?, is_armed = ? WHERE id = ?",
         (triggered_at, is_armed, alarm_id),
     ) as cursor:
         await conn.commit()
-        if cursor.rowcount == 0:
-            logger.warning("Race condition averted: Alarm %s triggered_at update skipped due to concurrent modification.", alarm_id)
 
 
 async def update_alarm_armed_status(alarm_id: int, is_armed: int) -> None:
-    """
-    تغییر وضعیت مسلح بودن (Rearm / Disarm).
-    کنترل هم‌زمانی: برای جلوگیری از مسابقه تیک‌ها، تفنگ فقط زمانی مسلح (1) یا خلع سلاح (0) می‌شود که در حال حاضر در وضعیت مخالف باشد.
-    """
     conn = get_db()
-    current_opposite_state = 0 if is_armed == 1 else 1
-
     async with conn.execute(
-        "UPDATE alarms SET is_armed = ? WHERE id = ? AND is_armed = ? AND is_active = 1",
-        (is_armed, alarm_id, current_opposite_state),
+        "UPDATE alarms SET is_armed = ? WHERE id = ?",
+        (is_armed, alarm_id),
     ) as cursor:
         await conn.commit()
-        if cursor.rowcount == 0:
-            logger.debug("Optimistic lock: Alarm %s arming status change to %s skipped (already processed).", alarm_id, is_armed)
 
 
 def is_alarm_triggered_today(last_triggered_timestamp: int) -> bool:
-    """بررسی می‌کند که آیا تاریخ آخرین شلیک در روز تقویمی امروز سرور رخ داده است یا خیر."""
     if not last_triggered_timestamp:
         return False
     return datetime.fromtimestamp(last_triggered_timestamp).date() == date.today()
 
-
-# ---------------------------------------------------------------------------
-# News subscriptions
-# ---------------------------------------------------------------------------
 
 async def get_user_news_sources(chat_id: int) -> list[str]:
     conn = get_db()
@@ -371,10 +351,6 @@ async def toggle_news_source(chat_id: int, source: str) -> bool:
             await conn.commit()
             return False
 
-
-# ---------------------------------------------------------------------------
-# Alarm management
-# ---------------------------------------------------------------------------
 
 async def get_user_alarms(chat_id: int) -> list[dict]:
     conn = get_db()
@@ -467,10 +443,6 @@ async def get_alarm_by_id(alarm_id: int, chat_id: int) -> dict | None:
     }
 
 
-# ---------------------------------------------------------------------------
-# News feed engine management (v1.0)
-# ---------------------------------------------------------------------------
-
 async def insert_news_item(
     title: str,
     summary: str,
@@ -481,10 +453,6 @@ async def insert_news_item(
     score: int,
     published_at: int,
 ) -> bool:
-    """
-    ذخیره‌سازی اتمیک خبر جدید با شرط عدم تکراری بودن لینک.
-    در صورت تکراری بودن لینک، INSERT نادیده گرفته شده و False برمی‌گرداند.
-    """
     conn = get_db()
     now = int(time.time())
     query = """
@@ -506,12 +474,6 @@ async def get_filtered_news(
     page_size: int = 5,
     ignore_user_sources: bool = False,
 ) -> tuple[list[dict], int]:
-    """
-    دریافت اخبار ۲۴ ساعت گذشته بر اساس منابع انتخابی کاربر در پروفایل.
-    - اگر ignore_user_sources برابر True باشد، منابع کاربر نادیده گرفته شده و تمام اخبار نشان داده می‌شود.
-    - اگر کاربر هیچ منبعی انتخاب نکرده باشد، لیست خالی برگردانده می‌شود.
-    - خروجی شامل: (لیست اخبار این صفحه, کل تعداد اخبار موجود).
-    """
     conn = get_db()
     cutoff_timestamp = int(time.time()) - (24 * 3600)
     offset = (page - 1) * page_size
@@ -528,7 +490,6 @@ async def get_filtered_news(
         where_clause = f"WHERE published_at >= ? AND source_slug IN ({placeholders})"
         params = [cutoff_timestamp] + user_sources
 
-    # ۱. محاسبه کل تعداد اخبار واجد شرایط برای Pagination
     count_query = f"SELECT COUNT(*) FROM news_feed {where_clause}"
     async with conn.execute(count_query, params) as cursor:
         row = await cursor.fetchone()
@@ -537,7 +498,6 @@ async def get_filtered_news(
     if total_count == 0:
         return [], 0
 
-    # ۲. کوئری دریافت اخبار صفحه جاری
     fetch_query = f"""
     SELECT id, title, summary, link, source_name, source_slug, category, score, published_at
     FROM news_feed
@@ -569,9 +529,6 @@ async def get_filtered_news(
 
 
 async def purge_expired_news(ttl_hours: int = 24) -> int:
-    """
-    پاکسازی خودکار اخباری که زمان انتشار واقعی آن‌ها قدیمی‌تر از TTL است.
-    """
     conn = get_db()
     cutoff_timestamp = int(time.time()) - (ttl_hours * 3600)
 

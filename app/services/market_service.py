@@ -11,6 +11,7 @@ import httpx
 
 from app.database import get_db
 from app.config import settings
+from app.bot.bot_state import poller_status
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,18 @@ _FETCHERS = {
 async def get_market_data() -> Optional[MarketData]:
     """
     Fetches market data with a resilient stateful fallback chain, defaulting to Bitpin.
+    Includes mock override support for live presentation mode.
     """
+    # ۱. گیت کنترل تزریق قیمت فرضی برای زمان پرزنت زنده
+    if poller_status.mock_mode and poller_status.mock_price is not None:
+        return MarketData(
+            price=poller_status.mock_price,
+            volume=1000000.0,
+            source="demo_mock",
+            change_24h=1.5,
+        )
+
+    # ۲. مسیر اصلی و زنده صرافی‌ها
     global _bitpin_fail_count, _fallback_active, _fallback_started_at
 
     now = time.time()
@@ -180,6 +192,17 @@ async def get_market_data() -> Optional[MarketData]:
 
 async def get_latest_snapshot() -> Optional[dict]:
     """Return the most recent market_snapshots row, or None if empty."""
+    # اگر حالت دمو فعال باشد، همین قیمت فرضی را به عنوان آخرین سنپ‌شات پس می‌دهد
+    if poller_status.mock_mode and poller_status.mock_price is not None:
+        return {
+            "id": 0,
+            "timestamp": int(time.time()),
+            "price": poller_status.mock_price,
+            "volume": 1000000.0,
+            "source": "demo_mock",
+            "change_24h": 1.5,
+        }
+
     conn = get_db()
     cursor = await conn.execute(
         "SELECT id, timestamp, price, volume, source "

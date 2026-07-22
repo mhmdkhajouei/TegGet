@@ -1,25 +1,16 @@
 """
-Alarm evaluation and trigger engine.
-
-Extracted from main.py (previously inline in the poll loop) to satisfy the
-project's own layering rule: the market-poll loop should only drive the
-tick, not contain the domain logic for what an alarm "firing" means. All
-alarm math and Telegram dispatch for triggered alarms lives here.
+Alarm evaluation and trigger engine (HTML Parse Mode, Virtual Time & Auto Re-arm Integration).
 """
 import logging
-import time
+from datetime import datetime, timezone
 
 from telegram.ext import ExtBot
-
 from app import database
+from app.services import time_service
 
 logger = logging.getLogger(__name__)
 
-# 0.3% neutral band used to require a genuine crossing (not noise) before
-# an alarm is allowed to rearm after firing (Strictly for non-daily modes).
-_HYSTERESIS_BAND = 0.003
-
-# Cooldown windows per frequency mode, in seconds.
+_HYSTERESIS_BAND = 0.003  # 0.3% باند اطمینان برای Re-arm شدن
 _EVERY_TIME_COOLDOWN_SECONDS = 180
 
 _CONDITION_LABELS = {
@@ -33,18 +24,14 @@ _CONDITION_LABELS = {
 async def evaluate_and_trigger_alarms(
     current_price: float, source: str, bot_token: str
 ) -> None:
-    """
-    موتور اصلی ارزیابی و شلیک هشدارهای قیمت بر اساس سند فلو و تجربه کاربری.
-    اصلاح نهایی: جداسازی کامل سشن ارسال پیام از پولر اصلی با ایجاد کلاینت مستقل موقت
-    جهت جلوگیری از باگ مرگبار RuntimeError برای HTTPXRequest.
-    """
     try:
-        # دریافت تمام هشدارهای فعال (حتی هشدارهایی که مسلح نیستند)
         active_alarms = await database.get_active_alarms()
         if not active_alarms:
             return
 
-        now = time.time()
+        now = time_service.get_current_timestamp()
+        current_virtual_datetime = time_service.get_current_datetime()
+        current_date_str = current_virtual_datetime.strftime("%Y-%m-%d")
 
         for alarm in active_alarms:
             alarm_id = alarm["id"]
@@ -52,165 +39,113 @@ async def evaluate_and_trigger_alarms(
             target_price = alarm["target_price"]
             condition = alarm["condition"]
             frequency = alarm["frequency"]
-            last_triggered = alarm["last_triggered_at"]
+            last_triggered = alarm["last_triggered_at"] or 0
             is_armed = alarm["is_armed"]
 
             # ---------------------------------------------------------------------------
-            # لایه اول: ارزیابی وضعیت مسلح بودن (Rearm) و تشخیص وضعیت جاری کانال قیمت
+            # ۱. منطق Re-arm (مسلح‌سازی مجدد در صورت خروج قیمت از محدوده target)
+            # ---------------------------------------------------------------------------
+            if not is_armed:
+                hysteresis_val = target_price * _HYSTERESIS_BAND
+                should_rearm = False
+
+                if condition in ("above", "percentage_up") and current_price < (target_price - hysteresis_val):
+                    should_rearm = True
+                elif condition in ("below", "percentage_down") and current_price > (target_price + hysteresis_val):
+                    should_rearm = True
+
+                if should_rearm:
+                    # مسلح کردن مجدد هشدار در دیتابیس
+                    await database.update_alarm_armed_status(alarm_id, is_armed=1)
+                    logger.info("🔄 Alarm %s RE-ARMED (Price exited target threshold)", alarm_id)
+                    is_armed = 1
+                else:
+                    # اگر هنوز قیمت از محدوده خارج نشده، شلیک نکن
+                    continue
+
+            # ---------------------------------------------------------------------------
+            # ۲. بررسی شرط قیمت
             # ---------------------------------------------------------------------------
             is_condition_met = False
-            in_opposite_channel = False
 
-            if condition == "above":
+            if condition in ("above", "percentage_up"):
                 is_condition_met = current_price >= target_price
-                in_opposite_channel = current_price <= target_price
-
-                if not is_armed:
-                    if frequency == "every_time":
-                        if current_price <= target_price * (1 - _HYSTERESIS_BAND):
-                            await database.update_alarm_armed_status(alarm_id, 1)
-                            logger.info("Alarm %s (every_time) re-armed.", alarm_id)
-                            continue
-                    elif frequency == "daily":
-                        if in_opposite_channel:
-                            await database.update_alarm_armed_status(alarm_id, 1)
-                            logger.info("Daily alarm %s re-armed by returning to safe channel.", alarm_id)
-                            continue
-                    else:  # once
-                        if current_price < target_price:
-                            await database.update_alarm_armed_status(alarm_id, 1)
-                            continue
-
-            elif condition == "below":
+            elif condition in ("below", "percentage_down"):
                 is_condition_met = current_price <= target_price
-                in_opposite_channel = current_price >= target_price
 
-                if not is_armed:
-                    if frequency == "every_time":
-                        if current_price >= target_price * (1 + _HYSTERESIS_BAND):
-                            await database.update_alarm_armed_status(alarm_id, 1)
-                            logger.info("Alarm %s (every_time) re-armed.", alarm_id)
-                            continue
-                    elif frequency == "daily":
-                        if in_opposite_channel:
-                            await database.update_alarm_armed_status(alarm_id, 1)
-                            logger.info("Daily alarm %s re-armed by returning to safe channel.", alarm_id)
-                            continue
-                    else:  # once
-                        if current_price > target_price:
-                            await database.update_alarm_armed_status(alarm_id, 1)
-                            continue
+            if not is_condition_met:
+                continue
 
-            elif condition == "percentage_up":
-                is_condition_met = current_price >= target_price
-                if not is_armed and current_price <= target_price * (1 - _HYSTERESIS_BAND):
-                    await database.update_alarm_armed_status(alarm_id, 1)
+            # ---------------------------------------------------------------------------
+            # ۳. بررسی Cooldown و شرط Daily (با تاریخ مجازی)
+            # ---------------------------------------------------------------------------
+            # بررسی کول‌داون ۳ دقیقه‌ای برای حالت every_time
+            if frequency == "every_time":
+                if now - last_triggered < _EVERY_TIME_COOLDOWN_SECONDS:
                     continue
 
-            elif condition == "percentage_down":
-                is_condition_met = current_price <= target_price
-                if not is_armed and current_price >= target_price * (1 + _HYSTERESIS_BAND):
-                    await database.update_alarm_armed_status(alarm_id, 1)
+            # بررسی عدم شلیک مجدد در همان روز تقویمی برای حالت daily
+            if frequency == "daily" and last_triggered > 0:
+                last_triggered_dt = datetime.fromtimestamp(
+                    last_triggered, tz=timezone.utc
+                )
+                last_date_str = last_triggered_dt.strftime("%Y-%m-%d")
+
+                logger.debug(
+                    "🔍 [DEBUG DAILY] Alarm %s | Last Date: %s | Virtual Date: %s",
+                    alarm_id,
+                    last_date_str,
+                    current_date_str,
+                )
+
+                # اگر تاریخ شلیک قبلی بزرگتر یا مساوی تاریخ مجازی جاری باشد -> بلاک
+                if last_date_str >= current_date_str:
+                    logger.debug(
+                        "⛔ [BLOCKED DAILY] Alarm %s already triggered today (%s)",
+                        alarm_id,
+                        last_date_str,
+                    )
                     continue
 
             # ---------------------------------------------------------------------------
-            # لایه دوم: گیت‌های کنترلی تناوب، جلوگیری از اسپم و مدیریت تعویق (Daily Control)
-            # ---------------------------------------------------------------------------
-
-            # منطق اختصاصی هشدارهای روزانه (Hybrid Daily Control)
-            if frequency == "daily":
-                triggered_today = database.is_alarm_triggered_today(last_triggered)
-
-                if is_armed == 1:
-                    # اگر قیمت مرز را شکسته است
-                    if is_condition_met:
-                        if not triggered_today:
-                            # سهمیه امروز خالی است؛ مجاز به شلیک فوری
-                            pass
-                        else:
-                            # امروز قبلاً شلیک شده؛ خلع سلاح اتمیک جهت جلوگیری از اسپم متوالی قیمت
-                            await database.update_alarm_armed_status(alarm_id, 0)
-                            logger.info("Daily alarm %s broke boundary but postponed due to daily limit.", alarm_id)
-                            continue
-                    else:
-                        # تفنگ مسلح است اما قیمت هنوز نرسیده؛ رد کردن لوپ
-                        continue
-                else:
-                    # تفنگ مسلح نیست (is_armed == 0)
-                    # اگر قیمت همچنان در کانال شکست باقی مانده ولی روز تقویمی عوض شده باشد (شلیک معوقه بامداد)
-                    if is_condition_met and not triggered_today:
-                        cond_str = _CONDITION_LABELS.get(condition, condition)
-                        message_text = (
-                            f"🌅 **گزارش روز جدید!**\n"
-                            f"――――――――――――\n\n"
-                            f"🎯 شرط هدف: {cond_str} {target_price:,.0f} تومان\n"
-                            f"💰 قیمت فعلی بازار: {current_price:,.0f} تومان\n"
-                            f"🌐 منبع قیمت: {source}\n\n"
-                            f"🔁 تناوب هشدار: روزی یک‌بار (گزارش ماندگاری در ناحیه شکست)"
-                        )
-                        try:
-                            # ساخت کلاینت مستقل اتمیک موقت مخصوص تسک پس‌زمینه
-                            local_bot = ExtBot(token=bot_token)
-                            async with local_bot:
-                                await local_bot.send_message(chat_id=chat_id, text=message_text, parse_mode="Markdown")
-                            await database.update_alarm_triggered_at(alarm_id, int(now), is_armed=0)
-                            logger.info("Executed postponed daily notification for new calendar day on alarm %s", alarm_id)
-                        except Exception as tg_err:
-                            logger.error("Failed to send postponed daily alert: %s", tg_err)
-                        continue
-                    else:
-                        # قیمت یا برگشته که در لایه اول مسلح می‌شود، یا امروز شلیک شده و قیمت هنوز بالای مرز است
-                        continue
-
-            # منطق سایر فرکانس‌ها (every_time, once)
-            else:
-                if not is_condition_met:
-                    continue
-
-                if not is_armed:
-                    continue
-
-                if frequency == "every_time":
-                    if now - last_triggered < _EVERY_TIME_COOLDOWN_SECONDS:
-                        continue
-
-            # ---------------------------------------------------------------------------
-            # لایه سوم: شلیک اعلان، ارسال تلگرام و به‌روزرسانی اتمیک دیتابیس
+            # ۴. ساخت متن HTML استاندارد
             # ---------------------------------------------------------------------------
             cond_str = _CONDITION_LABELS.get(condition, condition)
 
             message_text = (
-                f"🔔 **هشدار قیمت تتر محقق شد!**\n"
-                f"――――――――――――\n\n"
+                f"🔔 <b>هشدار قیمت تتر محقق شد!</b>\n"
+                f"----------------------------------------\n\n"
                 f"🎯 شرط هدف: {cond_str} {target_price:,.0f} تومان\n"
                 f"💰 قیمت فعلی بازار: {current_price:,.0f} تومان\n"
                 f"🌐 منبع قیمت: {source}\n\n"
             )
 
             if frequency == "once":
-                message_text += "💡 این هشدار یک‌بار مصرف بود و اکنون غیرفعال شد. جای خالی برای شما آزاد گردید."
+                message_text += "💡 این هشدار یک‌بار مصرف بود و اکنون غیرفعال گردید."
             else:
                 message_text += f"🔁 تناوب هشدار: {frequency == 'daily' and 'روزی یک‌بار' or 'هر بار (با رعایت نوسان)'}"
 
+            # ---------------------------------------------------------------------------
+            # ۵. ارسال به تلگرام با HTML و به‌روزرسانی دیتابیس
+            # ---------------------------------------------------------------------------
             try:
-                # ساخت کلاینت مستقل اتمیک موقت مخصوص تسک پس‌زمینه برای عدم تداخل با سشن اصلی
                 local_bot = ExtBot(token=bot_token)
                 async with local_bot:
                     await local_bot.send_message(
                         chat_id=chat_id,
                         text=message_text,
-                        parse_mode="Markdown"
+                        parse_mode="HTML"
                     )
-                logger.info("Successfully dispatched alarm alert to chat_id=%s", chat_id)
+                logger.info("SUCCESS: Telegram alert sent to chat_id=%s for alarm %s", chat_id, alarm_id)
 
                 if frequency == "once":
                     await database.deactivate_alarm(alarm_id)
                 else:
-                    # ثبت زمان شلیک و سلب وضعیت مسلح (نامسلح کردن تا بازگشت بعدی قیمت)
+                    # ثبت timestamp مجازی فعلی و غیرمسلح کردن تا زمان خروج دوباره قیمت از محدوده
                     await database.update_alarm_triggered_at(alarm_id, int(now), is_armed=0)
 
             except Exception as tg_err:
-                logger.error("Failed to send Telegram alert for alarm %s: %s", alarm_id, tg_err)
+                logger.error("FAILED to send Telegram message for alarm %s: %s", alarm_id, tg_err, exc_info=True)
 
     except Exception as e:
-        logger.error("Error in alarm evaluation process loop: %s", e, exc_info=True)
+        logger.error("Error in alarm evaluation loop: %s", e, exc_info=True)

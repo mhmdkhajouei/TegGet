@@ -24,5 +24,9 @@ class PollerStatus:
     last_price: float | None = None
     last_source: str | None = None
 
+    # متغیرهای اضافه شده برای تزریق قیمت فرضی در پرزنت زنده (Demo/Mock Mode)
+    mock_mode: bool = False
+    mock_price: float | None = None
+
 
 poller_status = PollerStatus()
