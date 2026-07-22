@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(10.0)
 
-# حالت‌های مدیریت زاپاس (Failover State)
-_wallex_fail_count = 0
+# حالت‌های مدیریت زاپاس (Failover State) بر پایه بیت‌پین
+_bitpin_fail_count = 0
 _fallback_active = False
 _fallback_started_at = 0.0
-_COOLDOWN_PERIOD = 120.0  # مدت زمان مجازات والکس (۲ دقیقه)
+_COOLDOWN_PERIOD = 120.0  # مدت زمان مجازات بیت‌پین (۲ دقیقه)
 
 TOLERANCE_SECONDS = 60 * 60  # +/- 60 minutes
 
@@ -44,7 +44,7 @@ def _debug_dump(source: str, data) -> None:
 
 
 async def _fetch_wallex() -> MarketData:
-    """Priority 1: Wallex API — symbol USDTTMN, price/volume under stats."""
+    """Priority 2 (Backup): Wallex API — symbol USDTTMN, price/volume under stats."""
     async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(settings.wallex_api_url)
         resp.raise_for_status()
@@ -68,7 +68,7 @@ async def _fetch_wallex() -> MarketData:
 
 
 async def _fetch_bitpin() -> MarketData:
-    """Priority 2: Bitpin API."""
+    """Priority 1 (Primary): Bitpin API."""
     async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(settings.bitpin_api_url)
         resp.raise_for_status()
@@ -82,15 +82,29 @@ async def _fetch_bitpin() -> MarketData:
             if m["currency1"]["code"] == "USDT" and m["currency2"]["code"] == "IRT"
         )
         price = float(market["price"])
+
+        # استخراج حجم تومانی از value
         volume = None
         order_book_info = market.get("order_book_info") or {}
-        if order_book_info.get("amount") is not None:
-            volume = float(order_book_info["amount"])
+        if order_book_info.get("value") is not None:
+            volume = float(order_book_info["value"])
+
+        # استخراج درصد تغییر ۲۴ ساعته
+        change_24h = None
+        price_info = market.get("price_info") or {}
+        if price_info.get("change") is not None:
+            change_24h = float(price_info["change"])
+
     except (KeyError, TypeError, StopIteration):
         _debug_dump("bitpin", payload)
         raise
 
-    return MarketData(price=price, volume=volume, source="bitpin", change_24h=None)
+    return MarketData(
+        price=price,
+        volume=volume,
+        source="bitpin",
+        change_24h=change_24h
+    )
 
 
 async def _fetch_tetherland() -> MarketData:
@@ -110,29 +124,29 @@ async def _fetch_tetherland() -> MarketData:
 
 
 _FETCHERS = {
-    "wallex": _fetch_wallex,
     "bitpin": _fetch_bitpin,
+    "wallex": _fetch_wallex,
     "tetherland": _fetch_tetherland,
 }
 
 
 async def get_market_data() -> Optional[MarketData]:
     """
-    Fetches market data with a resilient stateful fallback chain.
+    Fetches market data with a resilient stateful fallback chain, defaulting to Bitpin.
     """
-    global _wallex_fail_count, _fallback_active, _fallback_started_at
+    global _bitpin_fail_count, _fallback_active, _fallback_started_at
 
     now = time.time()
 
     if _fallback_active and (now - _fallback_started_at > _COOLDOWN_PERIOD):
-        logger.info("Auto-recovery: Trying to restore Wallex as the primary market source.")
+        logger.info("Auto-recovery: Trying to restore Bitpin as the primary market source.")
         _fallback_active = False
-        _wallex_fail_count = 0
+        _bitpin_fail_count = 0
 
     priority = list(settings.market_source_priority)
-    if _fallback_active and "wallex" in priority:
-        priority.remove("wallex")
-        priority.append("wallex")
+    if _fallback_active and "bitpin" in priority:
+        priority.remove("bitpin")
+        priority.append("bitpin")
 
     for source_name in priority:
         fetcher = _FETCHERS.get(source_name)
@@ -142,19 +156,19 @@ async def get_market_data() -> Optional[MarketData]:
 
         try:
             data = await fetcher()
-            if source_name == "wallex":
-                _wallex_fail_count = 0
+            if source_name == "bitpin":
+                _bitpin_fail_count = 0
                 _fallback_active = False
             return data
         except Exception:
             logger.warning("Market source %s failed this tick", source_name)
-            if source_name == "wallex":
-                _wallex_fail_count += 1
-                if _wallex_fail_count >= 3 and not _fallback_active:
+            if source_name == "bitpin":
+                _bitpin_fail_count += 1
+                if _bitpin_fail_count >= 3 and not _fallback_active:
                     _fallback_active = True
                     _fallback_started_at = now
                     logger.error(
-                        "Wallex failed 3 times. Switching primary fetcher to Bitpin for 2 mins."
+                        "Bitpin failed 3 times. Switching primary fetcher to Wallex for 2 mins."
                     )
                 logger.info("Sleeping 2 seconds before falling back to next source...")
                 await asyncio.sleep(2.0)

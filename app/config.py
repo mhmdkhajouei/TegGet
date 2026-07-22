@@ -45,9 +45,9 @@ class Settings:
     # --- Misc ---
     env: str = os.getenv("ENV", "development")
 
-    # --- Market failover priority chain ---
+    # --- Market failover priority chain (Bitpin set as Primary) ---
     market_source_priority: tuple = field(
-        default_factory=lambda: ("wallex", "bitpin", "tetherland")
+        default_factory=lambda: ("bitpin", "wallex", "tetherland")
     )
 
     # --- RSS source priority chain (اقتصادی، رمزپایه و سیاسی) ---
