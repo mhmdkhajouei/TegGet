@@ -47,6 +47,15 @@ def _alarm_number_prompt(condition: str) -> str:
     return "یک عدد برای قیمت هدف وارد کن (مثلاً ۶۰۰۰۰):"
 
 
+async def _get_current_price_formatted() -> str:
+    current_price = poller_status.last_price
+    if current_price is None:
+        snapshot = await database.get_latest_snapshot()
+        current_price = snapshot["price"] if snapshot else None
+
+    return f"{current_price:,.0f}" if current_price else "نامشخص"
+
+
 async def handle_alarm_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
 
@@ -71,10 +80,13 @@ async def handle_alarm_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["alarm_message_id"] = sent_msg.message_id
         return WAITING_CONDITION
 
+    price_formatted = await _get_current_price_formatted()
+
     keyboard = _with_cancel_footer(_condition_option_rows())
     sent_msg = await update.message.reply_text(
         "🔔 هشدار جدید\n"
         "――――――――――――\n\n"
+        f"📊 قیمت فعلی تتر: {price_formatted} تومان\n\n"
         "اول نوع شرط هشدار را انتخاب کن:",
         reply_markup=keyboard,
     )
@@ -120,12 +132,7 @@ async def handle_alarm_condition(update: Update, context: ContextTypes.DEFAULT_T
     condition = query.data.split(":", 1)[1]
     context.user_data["alarm_condition"] = condition
 
-    current_price = poller_status.last_price
-    if current_price is None:
-        snapshot = await database.get_latest_snapshot()
-        current_price = snapshot["price"] if snapshot else 0
-
-    price_formatted = f"{current_price:,.0f}" if current_price else "نامشخص"
+    price_formatted = await _get_current_price_formatted()
     condition_label = _CONDITION_LABELS.get(condition, condition)
 
     keyboard = _with_cancel_footer([], back_callback="nav:back_condition")
@@ -153,10 +160,13 @@ async def handle_alarm_back_to_condition(update: Update, context: ContextTypes.D
     query = update.callback_query
     await query.answer()
 
+    price_formatted = await _get_current_price_formatted()
+
     keyboard = _with_cancel_footer(_condition_option_rows())
     await query.edit_message_text(
         "🔔 هشدار جدید\n"
         "――――――――――――\n\n"
+        f"📊 قیمت فعلی تتر: {price_formatted} تومان\n\n"
         "اول نوع شرط هشدار را انتخاب کن:",
         reply_markup=keyboard,
     )
@@ -280,12 +290,7 @@ async def handle_alarm_back_to_number(update: Update, context: ContextTypes.DEFA
         )
         return ConversationHandler.END
 
-    current_price = poller_status.last_price
-    if current_price is None:
-        snapshot = await database.get_latest_snapshot()
-        current_price = snapshot["price"] if snapshot else 0
-
-    price_formatted = f"{current_price:,.0f}" if current_price else "نامشخص"
+    price_formatted = await _get_current_price_formatted()
     condition_label = _CONDITION_LABELS.get(condition, condition)
 
     keyboard = _with_cancel_footer([], back_callback="nav:back_condition")

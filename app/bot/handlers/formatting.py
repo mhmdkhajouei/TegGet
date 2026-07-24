@@ -13,10 +13,10 @@ from app.bot.bot_state import poller_status
 _TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
 _CONDITION_LABELS = {
-    "above":              "📈 بالاتر از این قیمت",
-    "below":              "📉 پایین‌تر از این قیمت",
-    "percentage_up":      "🚀 افزایش بیش از این درصد",
-    "percentage_down":    "🔻 کاهش بیش از این درصد",
+    "above":           "📈 بالاتر از قیمت",
+    "below":           "📉 پایین‌تر از قیمت",
+    "percentage_up":   "🚀 رشد درصدی",
+    "percentage_down": "🔻 افت درصدی",
 }
 
 _FREQUENCY_LABELS = {
@@ -113,8 +113,8 @@ def _validate_target_price(condition: str, target_price: float) -> tuple[bool, s
     if condition == "above" and target_price <= current_price:
         return False, (
             f"⚠️ خطای قیمت هدف!\n\n"
-            f"شما شرط «📈 بالاتر از این قیمت» را انتخاب کرده‌اید، بنابراین قیمت هدف شما باید از قیمت فعلی بازار بیشتر باشد.\n\n"
-            f"📈 قیمت فعلی تتر: {current_price:,.0f} تومان\n"
+            f"شما شرط «📈 بالاتر از قیمت» را انتخاب کرده‌اید، بنابراین قیمت هدف شما باید از قیمت فعلی بازار بیشتر باشد.\n\n"
+            f"📊 قیمت فعلی تتر: {current_price:,.0f} تومان\n"
             f"❌ قیمت وارد شده: {target_price:,.0f} تومان\n\n"
             f"💡 لطفاً یک عدد بزرگتر وارد کنید:"
         )
@@ -122,8 +122,8 @@ def _validate_target_price(condition: str, target_price: float) -> tuple[bool, s
     if condition == "below" and target_price >= current_price:
         return False, (
             f"⚠️ خطای قیمت هدف!\n\n"
-            f"شما شرط «📉 پایین‌تر از این قیمت» را انتخاب کرده‌اید، بنابراین قیمت هدف شما باید از قیمت فعلی بازار کمتر باشد.\n\n"
-            f"📈 قیمت فعلی تتر: {current_price:,.0f} تومان\n"
+            f"شما شرط «📉 پایین‌تر از قیمت» را انتخاب کرده‌اید، بنابراین قیمت هدف شما باید از قیمت فعلی بازار کمتر باشد.\n\n"
+            f"📊 قیمت فعلی تتر: {current_price:,.0f} تومان\n"
             f"❌ قیمت وارد شده: {target_price:,.0f} تومان\n\n"
             f"💡 لطفاً یک عدد کوچکتر وارد کنید:"
         )

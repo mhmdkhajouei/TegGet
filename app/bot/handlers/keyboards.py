@@ -60,10 +60,10 @@ def _get_price_keyboard() -> InlineKeyboardMarkup:
 
 def _condition_option_rows() -> list[list[InlineKeyboardButton]]:
     return [
-        [InlineKeyboardButton("📈 بالاتر از این قیمت",     callback_data="condition:above")],
-        [InlineKeyboardButton("📉 پایین‌تر از این قیمت",   callback_data="condition:below")],
-        [InlineKeyboardButton("🚀 افزایش بیش از این درصد", callback_data="condition:percentage_up")],
-        [InlineKeyboardButton("🔻 کاهش بیش از این درصد",  callback_data="condition:percentage_down")],
+        [InlineKeyboardButton("📈 بالاتر از قیمت", callback_data="condition:above")],
+        [InlineKeyboardButton("📉 پایین‌تر از قیمت", callback_data="condition:below")],
+        [InlineKeyboardButton("🚀 رشد درصدی", callback_data="condition:percentage_up")],
+        [InlineKeyboardButton("🔻 افت درصدی", callback_data="condition:percentage_down")],
     ]
 
 
